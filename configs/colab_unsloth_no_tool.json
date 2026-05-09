@@ -1,0 +1,22 @@
+{
+  "manifest": "data/processed/no_tool_manifest.csv",
+  "model_name_or_path": "Qwen/Qwen3.5-4B",
+  "output_dir": "outputs/qwen3_5_4b_no_tool_lora",
+  "max_seq_len": 4096,
+  "per_device_train_batch_size": 2,
+  "gradient_accumulation_steps": 16,
+  "learning_rate": 2e-4,
+  "num_train_epochs": 1,
+  "warmup_ratio": 0.03,
+  "logging_steps": 50,
+  "seed": 42,
+  "bf16": true,
+  "use_4bit": false,
+  "lora_r": 32,
+  "lora_alpha": 32,
+  "lora_dropout": 0.0,
+  "lora_target_modules": "q_proj,k_proj,v_proj,o_proj,in_proj,out_proj,gate_proj,up_proj,down_proj",
+  "use_rslora": false,
+  "train_on_responses_only": false
+}
+
