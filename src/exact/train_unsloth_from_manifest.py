@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import json
 from collections import Counter
 from pathlib import Path
@@ -157,9 +158,9 @@ def _parse_target_modules(raw: str | list[str]) -> list[str]:
 def main() -> None:
     args = parse_args()
 
+    from unsloth import FastLanguageModel
     from datasets import Dataset
     from transformers import Trainer, TrainingArguments
-    from unsloth import FastLanguageModel
 
     records = load_records(
         args.manifest,
@@ -223,13 +224,19 @@ def main() -> None:
         max_grad_norm=1.0,
     )
 
-    trainer = Trainer(
-        model=model,
-        tokenizer=tokenizer,
-        args=training_args,
-        train_dataset=dataset,
-        data_collator=MaskedDataCollator(pad_token_id=pad_token_id),
-    )
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": dataset,
+        "data_collator": MaskedDataCollator(pad_token_id=pad_token_id),
+    }
+    trainer_init_params = inspect.signature(Trainer.__init__).parameters
+    if "processing_class" in trainer_init_params:
+        trainer_kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in trainer_init_params:
+        trainer_kwargs["tokenizer"] = tokenizer
+
+    trainer = Trainer(**trainer_kwargs)
 
     if args.train_on_responses_only:
         raise ValueError(
