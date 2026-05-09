@@ -213,6 +213,7 @@ def main() -> None:
         logging_steps=args.logging_steps,
         bf16=args.bf16,
         seed=args.seed,
+        save_strategy="no",
         remove_unused_columns=False,
         report_to="none",
         optim="adamw_8bit" if args.load_in_4bit else "adamw_torch",
@@ -243,4 +244,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
