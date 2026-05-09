@@ -1,0 +1,11 @@
+{
+  "question": "Can the student receive a B in this course?",
+  "premises-NL": [
+    "If a student misses the lab exam, the lab score is zero.",
+    "If the lab score is zero, the student cannot pass the course.",
+    "If the final exam score is at least 8 and the student passes the course, the student may receive a B.",
+    "The student missed the lab exam.",
+    "The final exam score is 8."
+  ]
+}
+

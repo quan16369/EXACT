@@ -1,0 +1,7 @@
+{
+  "loss_policy": "completion_only_mask_prompt",
+  "max_seq_len": 8192,
+  "default_model_family": "Qwen 3.5 4B or another open-source <=8B model",
+  "mandatory_response_fields": ["answer", "explanation"],
+  "encouraged_response_fields": ["fol", "cot", "premises", "confidence"]
+}

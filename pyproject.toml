@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exact-2026-starter"
+version = "0.1.0"
+description = "Hybrid symbolic and SFT starter repo for EXACT 2026."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+train = [
+  "accelerate>=0.33.0",
+  "bitsandbytes>=0.43.0",
+  "datasets>=2.19.0",
+  "peft>=0.11.0",
+  "torch>=2.2.0",
+  "transformers>=4.44.0",
+]
+api = [
+  "fastapi>=0.111.0",
+  "uvicorn>=0.30.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
