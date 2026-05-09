@@ -111,6 +111,22 @@ If `--lora-r 0`, the script performs normal full fine-tuning. The default config
 uses QLoRA-style 4-bit loading, bf16 compute, Qwen projection MLP LoRA targets,
 and the same masked-loss contract as the reference repo.
 
+Unsloth trainer variant:
+
+```bash
+scripts/train_unsloth_tool_always_qwen3_5_4b.sh
+```
+
+or:
+
+```bash
+scripts/train_unsloth_no_tool_qwen3_5_4b.sh
+```
+
+This still trains from `input_ids_json`/`mask_json`; it does not call Unsloth's
+`train_on_responses_only`, because prompt masking is already encoded in
+`labels = token if mask == 1 else -100`.
+
 ## Run Baseline Inference
 
 ```bash

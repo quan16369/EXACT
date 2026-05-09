@@ -54,10 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-ratio", type=float, default=float(defaults.get("warmup_ratio", 0.03)))
     parser.add_argument("--logging-steps", type=int, default=int(defaults.get("logging_steps", 10)))
     parser.add_argument("--seed", type=int, default=int(defaults.get("seed", 42)))
-    parser.add_argument("--bf16", action="store_true", default=bool(defaults.get("bf16", False)))
-    parser.add_argument("--use-4bit", action="store_true", default=bool(defaults.get("use_4bit", False)))
-    parser.add_argument("--gradient-checkpointing", action="store_true", default=bool(defaults.get("gradient_checkpointing", True)))
-    parser.add_argument("--attn-implementation", default=defaults.get("attn_implementation"))
+    parser.add_argument("--bf16", action="store_true", default=bool(defaults.get("bf16", True)))
+    parser.add_argument("--load-in-4bit", action="store_true", default=bool(defaults.get("use_4bit", True)))
     parser.add_argument("--lora-r", type=int, default=int(defaults.get("lora_r", 16)))
     parser.add_argument("--lora-alpha", type=int, default=int(defaults.get("lora_alpha", 32)))
     parser.add_argument("--lora-dropout", type=float, default=float(defaults.get("lora_dropout", 0.05)))
@@ -67,6 +65,13 @@ def parse_args() -> argparse.Namespace:
             "lora_target_modules",
             "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
         ),
+    )
+    parser.add_argument("--use-rslora", action="store_true", default=bool(defaults.get("use_rslora", False)))
+    parser.add_argument(
+        "--train-on-responses-only",
+        action="store_true",
+        default=bool(defaults.get("train_on_responses_only", False)),
+        help="Do not use this with pre-tokenized masked manifests; kept only for explicit experiments.",
     )
     args = parser.parse_args()
     if args.manifest is None:
@@ -104,10 +109,7 @@ def load_records(
             records.append(
                 {
                     "problem_id": row["problem_id"],
-                    "source_problem_id": row.get("source_problem_id", row["problem_id"]),
                     "category": row["category"],
-                    "segment": row.get("segment", "exact.jsonl"),
-                    "num_loss_tokens": int(row["num_loss_tokens"]),
                     "input_ids": input_ids,
                     "attention_mask": [1] * len(input_ids),
                     "labels": labels,
@@ -144,7 +146,7 @@ class MaskedDataCollator:
         }
 
 
-def _parse_target_modules(raw: str | list[str]) -> str | list[str]:
+def _parse_target_modules(raw: str | list[str]) -> list[str]:
     if isinstance(raw, list):
         return raw
     if raw == "all-linear":
@@ -152,62 +154,12 @@ def _parse_target_modules(raw: str | list[str]) -> str | list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def maybe_apply_lora(model: Any, args: argparse.Namespace) -> Any:
-    if args.lora_r <= 0:
-        return model
-    from peft import LoraConfig, get_peft_model
-
-    config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=_parse_target_modules(args.lora_target_modules),
-    )
-    return get_peft_model(model, config)
-
-
-def _torch_dtype(args: argparse.Namespace):
-    import torch
-
-    return torch.bfloat16 if args.bf16 else "auto"
-
-
-def _bnb_compute_dtype(args: argparse.Namespace):
-    import torch
-
-    return torch.bfloat16 if args.bf16 else torch.float16
-
-
-def _model_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"torch_dtype": _torch_dtype(args)}
-    if args.attn_implementation:
-        kwargs["attn_implementation"] = args.attn_implementation
-    if args.use_4bit:
-        from transformers import BitsAndBytesConfig
-
-        kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=_bnb_compute_dtype(args),
-        )
-        kwargs["device_map"] = "auto"
-    return kwargs
-
-
 def main() -> None:
     args = parse_args()
 
-    import torch.nn.functional as F
     from datasets import Dataset
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=True)
-    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
-        tokenizer.pad_token = tokenizer.eos_token
-    pad_token_id = tokenizer.pad_token_id or 0
+    from transformers import Trainer, TrainingArguments
+    from unsloth import FastLanguageModel
 
     records = load_records(
         args.manifest,
@@ -215,43 +167,41 @@ def main() -> None:
         max_seq_len=args.max_seq_len,
         limit_examples=args.limit_examples,
     )
-    category_counts = Counter(record["category"] for record in records)
-    total_tokens = sum(len(record["input_ids"]) for record in records)
-    total_loss_tokens = sum(record["num_loss_tokens"] for record in records)
+    counts = Counter(record["category"] for record in records)
     print(
         {
             "records": len(records),
-            "categories": dict(category_counts),
-            "tokens": total_tokens,
-            "loss_tokens": total_loss_tokens,
+            "categories": dict(counts),
+            "tokens": sum(len(record["input_ids"]) for record in records),
+            "loss_tokens": sum(sum(1 for label in record["labels"] if label != -100) for record in records),
         }
     )
-
     dataset = Dataset.from_list(records)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        **_model_load_kwargs(args),
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model_name_or_path,
+        max_seq_length=args.max_seq_len,
+        dtype=None,
+        load_in_4bit=args.load_in_4bit,
+        trust_remote_code=True,
     )
-    if args.gradient_checkpointing:
-        model.config.use_cache = False
-    model = maybe_apply_lora(model, args)
+    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    pad_token_id = tokenizer.pad_token_id or 0
 
-    class MaskedTrainer(Trainer):
-        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-            del num_items_in_batch
-            outputs = model(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-            )
-            shift_logits = outputs.logits[:, :-1, :].contiguous()
-            shift_labels = inputs["labels"][:, 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.reshape(-1),
-                ignore_index=-100,
-            )
-            return (loss, outputs) if return_outputs else loss
+    if args.lora_r > 0:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_r,
+            target_modules=_parse_target_modules(args.lora_target_modules),
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=args.seed,
+            use_rslora=args.use_rslora,
+            loftq_config=None,
+        )
 
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
@@ -265,21 +215,27 @@ def main() -> None:
         seed=args.seed,
         remove_unused_columns=False,
         report_to="none",
-        gradient_checkpointing=args.gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        optim="paged_adamw_8bit" if args.use_4bit else "adamw_torch",
+        optim="adamw_8bit" if args.load_in_4bit else "adamw_torch",
         weight_decay=0.0,
         adam_beta1=0.9,
         adam_beta2=0.95,
         max_grad_norm=1.0,
     )
 
-    trainer = MaskedTrainer(
+    trainer = Trainer(
         model=model,
+        tokenizer=tokenizer,
         args=training_args,
         train_dataset=dataset,
         data_collator=MaskedDataCollator(pad_token_id=pad_token_id),
     )
+
+    if args.train_on_responses_only:
+        raise ValueError(
+            "This script already uses pre-tokenized mask_json labels. "
+            "Do not also call Unsloth train_on_responses_only."
+        )
+
     trainer.train()
     trainer.save_model(str(args.output_dir))
     tokenizer.save_pretrained(str(args.output_dir))
@@ -287,3 +243,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
