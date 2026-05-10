@@ -134,6 +134,50 @@ PYTHONPATH=src python -m exact.infer --input data/examples/logic_request.json
 PYTHONPATH=src python -m exact.infer --input data/examples/physics_request.json
 ```
 
+## Test A Trained LoRA Adapter
+
+After training, run a few examples from the same pre-tokenized manifest. The
+script feeds only the masked prompt tokens into the model, then prints the model
+output next to the gold completion. It also saves:
+
+```text
+outputs/eval_no_tool/validation.csv
+outputs/eval_no_tool/results.csv
+outputs/eval_no_tool/mistakes.csv
+outputs/eval_no_tool/mistakes/<category>.csv
+```
+
+No-tool adapter:
+
+```bash
+scripts/infer_no_tool_samples.sh --category physics --limit-examples 3
+scripts/infer_no_tool_samples.sh --category logic --limit-examples 3
+```
+
+Balanced no-tool evaluation:
+
+```bash
+scripts/infer_no_tool_samples.sh --limit-per-category 50 --print-examples 5
+```
+
+Tool-always adapter:
+
+```bash
+scripts/infer_tool_always_samples.sh --category physics_tool_call --limit-examples 3
+```
+
+Equivalent explicit command:
+
+```bash
+PYTHONPATH=src python -m exact.infer_adapter_from_manifest \
+  --manifest data/processed/no_tool_manifest.csv \
+  --model-name-or-path Qwen/Qwen3.5-4B \
+  --adapter-dir outputs/qwen3_5_4b_no_tool_lora \
+  --eval-output-dir outputs/eval_no_tool \
+  --category physics \
+  --limit-examples 3
+```
+
 ## Python Calculation Tool
 
 The physics path now uses a Python execution tool similar in spirit to the AIMO
