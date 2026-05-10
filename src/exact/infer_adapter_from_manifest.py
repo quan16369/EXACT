@@ -10,18 +10,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .data import normalize_records
+from .prompts import build_completion, build_user_prompt, system_prompt_for_task
+from .tokenization import encode_text, render_prompt_text
+
 
 @dataclass(slots=True)
 class Sample:
     problem_id: str
     category: str
     prompt_ids: list[int]
-    gold_ids: list[int]
+    gold_ids: list[int] | None = None
+    prompt_text: str | None = None
+    gold_text: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate answers from a LoRA adapter on a few pre-tokenized manifest rows."
+        description="Evaluate a LoRA adapter on raw data or pre-tokenized manifest rows."
+    )
+    parser.add_argument(
+        "--input",
+        nargs="+",
+        type=Path,
+        default=None,
+        help="Raw EXACT JSON/CSV files. If provided, prompts and gold answers are rebuilt from raw data.",
     )
     parser.add_argument("--manifest", type=Path, default=Path("data/processed/no_tool_manifest.csv"))
     parser.add_argument("--model-name-or-path", default="Qwen/Qwen3.5-4B")
@@ -95,6 +108,58 @@ def load_samples(
     if not samples:
         raise ValueError(
             "No samples loaded. Check --manifest, --category, --offset, and --limit-per-category."
+        )
+    return samples
+
+
+def load_raw_samples(
+    input_paths: list[Path],
+    tokenizer: Any,
+    *,
+    category: str | None,
+    limit_examples: int,
+    limit_per_category: int | None,
+    offset: int,
+) -> list[Sample]:
+    if category == "physics_tool_call":
+        raise ValueError("--category physics_tool_call requires a tool-call manifest, not raw data")
+
+    samples: list[Sample] = []
+    matched_by_category: Counter[str] = Counter()
+    kept_by_category: Counter[str] = Counter()
+    for example in normalize_records(input_paths):
+        row_category = example.task
+        if category is not None and row_category != category:
+            continue
+        if matched_by_category[row_category] < offset:
+            matched_by_category[row_category] += 1
+            continue
+        matched_by_category[row_category] += 1
+        if limit_per_category is not None and kept_by_category[row_category] >= limit_per_category:
+            continue
+
+        prompt_text = render_prompt_text(
+            tokenizer,
+            system_prompt_for_task(example.task),
+            build_user_prompt(example),
+        )
+        gold_text = build_completion(example)
+        samples.append(
+            Sample(
+                problem_id=example.example_id,
+                category=example.task,
+                prompt_ids=encode_text(tokenizer, prompt_text),
+                prompt_text=prompt_text,
+                gold_text=gold_text,
+            )
+        )
+        kept_by_category[row_category] += 1
+        if limit_per_category is None and len(samples) >= limit_examples:
+            break
+
+    if not samples:
+        raise ValueError(
+            "No samples loaded. Check --input, --category, --offset, and --limit-per-category."
         )
     return samples
 
@@ -355,22 +420,6 @@ def main() -> None:
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    samples = load_samples(
-        args.manifest,
-        category=args.category,
-        limit_examples=args.limit_examples,
-        limit_per_category=args.limit_per_category,
-        offset=args.offset,
-    )
-    print(
-        {
-            "samples": len(samples),
-            "manifest": str(args.manifest),
-            "adapter_dir": str(args.adapter_dir),
-            "categories": sorted({sample.category for sample in samples}),
-        }
-    )
-
     tokenizer = AutoTokenizer.from_pretrained(
         args.adapter_dir,
         use_fast=True,
@@ -378,6 +427,34 @@ def main() -> None:
     )
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    if args.input:
+        samples = load_raw_samples(
+            args.input,
+            tokenizer,
+            category=args.category,
+            limit_examples=args.limit_examples,
+            limit_per_category=args.limit_per_category,
+            offset=args.offset,
+        )
+        source = {"input": [str(path) for path in args.input]}
+    else:
+        samples = load_samples(
+            args.manifest,
+            category=args.category,
+            limit_examples=args.limit_examples,
+            limit_per_category=args.limit_per_category,
+            offset=args.offset,
+        )
+        source = {"manifest": str(args.manifest)}
+    print(
+        {
+            "samples": len(samples),
+            **source,
+            "adapter_dir": str(args.adapter_dir),
+            "categories": sorted({sample.category for sample in samples}),
+        }
+    )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
@@ -414,9 +491,14 @@ def main() -> None:
             )[0]
         generated_ids = output_ids[len(sample.prompt_ids) :]
 
-        prompt = tokenizer.decode(sample.prompt_ids, skip_special_tokens=False)
+        prompt = sample.prompt_text or tokenizer.decode(sample.prompt_ids, skip_special_tokens=False)
         prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-        gold = tokenizer.decode(sample.gold_ids, skip_special_tokens=True).strip()
+        if sample.gold_text is not None:
+            gold = sample.gold_text
+        elif sample.gold_ids is not None:
+            gold = tokenizer.decode(sample.gold_ids, skip_special_tokens=True).strip()
+        else:
+            raise ValueError(f"Sample {sample.problem_id} has no gold target")
         eval_row = evaluate_prediction(sample, gold, prediction)
         eval_row.update(
             {

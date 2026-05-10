@@ -136,9 +136,11 @@ PYTHONPATH=src python -m exact.infer --input data/examples/physics_request.json
 
 ## Test A Trained LoRA Adapter
 
-After training, run a few examples from the same pre-tokenized manifest. The
-script feeds only the masked prompt tokens into the model, then prints the model
-output next to the gold completion. It also saves:
+After training, evaluate the no-tool adapter from the raw data files, not from
+the training manifest. The script rebuilds the same prompt format from
+`data/raw/Logic_Based_Educational_Queries.json` and
+`data/raw/Physics_Problems_Text_Only.csv`, then prints model output next to the
+gold completion. It also saves:
 
 ```text
 outputs/eval_no_tool/validation.csv
@@ -166,11 +168,14 @@ Tool-always adapter:
 scripts/infer_tool_always_samples.sh --category physics_tool_call --limit-examples 3
 ```
 
+The tool-always check still uses its generated manifest because raw physics data
+does not contain the synthetic Python tool-call target.
+
 Equivalent explicit command:
 
 ```bash
 PYTHONPATH=src python -m exact.infer_adapter_from_manifest \
-  --manifest data/processed/no_tool_manifest.csv \
+  --input data/raw/Logic_Based_Educational_Queries.json data/raw/Physics_Problems_Text_Only.csv \
   --model-name-or-path Qwen/Qwen3.5-4B \
   --adapter-dir outputs/qwen3_5_4b_no_tool_lora \
   --eval-output-dir outputs/eval_no_tool \
