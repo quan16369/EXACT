@@ -457,12 +457,23 @@ def main() -> None:
     )
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    model_kwargs = {
+        "device_map": "auto",
+        "dtype": dtype,
+        "trust_remote_code": True,
+    }
+    if args.load_in_4bit:
+        from transformers import BitsAndBytesConfig
+
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
-        device_map="auto",
-        torch_dtype=dtype,
-        load_in_4bit=args.load_in_4bit,
-        trust_remote_code=True,
+        **model_kwargs,
     )
     model = PeftModel.from_pretrained(model, args.adapter_dir)
     model.eval()
